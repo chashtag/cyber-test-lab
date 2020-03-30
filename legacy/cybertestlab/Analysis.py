@@ -51,7 +51,7 @@ class Analysis(object):
         if len(elfs) == 0:
             return None
         else:
-            return filter(None, elfs)
+            return list(filter(None, elfs))
 
     def scan_elfs(self, elfs):
         if not elfs:
