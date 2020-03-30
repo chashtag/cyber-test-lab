@@ -4,8 +4,11 @@ import os
 import sys
 import subprocess
 import magic
+import hashlib
 
 import r2pipe
+
+from stat import S_ISSOCK
 
 __author__ = 'Jason Callaway'
 __email__ = 'jasoncallaway@fedoraproject.org'
@@ -20,27 +23,27 @@ class Analysis(object):
         self.debug = debug
         self.path = path
         self.hardening_check = '/usr/bin/hardening-check'
-
+        
     def find_elfs(self, **kwargs):
         path = self.path
         if kwargs.get('path'):
             path = kwargs['path']
 
         find_results = []
-
+        
         rootDir = path
         for dirName, subdirList, fileList in os.walk(path):
             for fname in fileList:
                 the_file = os.path.join(path, fname)
-                try:
+                if os.path.exists(the_file) and not S_ISSOCK(os.stat(the_file).st_mode):
                     file_type = magic.from_file(the_file)
-                    if 'ELF' in file_type:
-                        find_results.append(the_file)
-                except:
-                    # Sometimes we fail to read the file for various
-                    # reasons
-                    pass
-
+                else:
+                    # Probably a broken symlink
+                    continue
+                
+                if 'ELF' in file_type:
+                    find_results.append(the_file)
+                
         elfs = []
         for result in filter(None, find_results):
             elfs.append(result.split(':')[0])
@@ -54,7 +57,7 @@ class Analysis(object):
         if not elfs:
             raise Exception('scan_elfs: you gave me an empty list of elfs you dope')
         scan_results = {}
-
+        
         for elf in elfs:
             if self.debug:
                 print('++ elf: ' + elf.replace(self.path + '/', ''))
@@ -67,7 +70,7 @@ class Analysis(object):
                 self.path + '/', '')
 
             # get hardening-check results
-            cmd = self.hardening_check + ' ' + binary
+            cmd = "{0} {1}".format(self.hardening_check, binary)
             hardening_results = \
                 self.run_command(cmd)
 
@@ -85,19 +88,19 @@ class Analysis(object):
             scan_results[relative_binary]['hardening-check'] = pretty_results
 
             # get function report
-            cmd = self.hardening_check + ' -R ' + binary
+            cmd = "{0} -R '{1}'".format(self.hardening_check, binary)
             hardening_results = \
                 self.run_command(cmd)
             # relevant stuff starts at 9th line
             scan_results[relative_binary]['report-functions'] = \
-                filter(None, hardening_results.split('\n')[8:])
+                list(filter(None, hardening_results.split('\n')[8:]))
 
             # get libc functions
-            cmd = self.hardening_check + ' -F ' + binary
-            hcdashf = filter(
+            cmd = "{0} -F '{1}'".format(self.hardening_check, binary)
+            hcdashf = list(filter(
                 None,
                 self.run_command(cmd).split('\n')
-            )
+            ))
             hcdashf_clean = []
             for lib in hcdashf:
                 if len(lib.split("'")) > 1:
@@ -111,6 +114,8 @@ class Analysis(object):
 
             scan_results[relative_binary]['complexity'] = self.get_complexity(binary)
 
+            # get hashes
+            scan_results[relative_binary]['hashlist'] = self.get_hashes(binary) 
         return scan_results
 
     def get_complexity(self, elf):
@@ -121,8 +126,8 @@ class Analysis(object):
         try:
             r2 = r2pipe.open(elf)
             if self.debug:
-                print('++ starting aa')
-            r2.cmd("aa")
+                print('++ starting aab')
+            r2.cmd("aab")
             if elf.endswith('.so'):
                 functions = r2.cmdj('afl')
                 entry = 'entry'
@@ -157,4 +162,22 @@ class Analysis(object):
             results = p.communicate()[0]
         except Exception as e:
             raise Exception(cmd + ' failed: ' + str(e))
+        if sys.version_info.major == 3:
+            return results.decode(sys.getdefaultencoding())
         return results
+
+    def get_hashes(self,file, hash_set=['md5','sha1','sha512'], **kwargs):
+        # quick hashing with large file support
+        hash_list = []
+        for algo in hash_set:
+            if algo in hashlib.algorithms_available:
+                hash_list.append(hashlib.new(algo))
+            else:
+                raise Exception('{0} is not a supported hashing algorithm')
+        with open(file,'rb') as f:
+            data = 'init'
+            while data:
+                data = f.read(8192)
+                [h.update(data) for h in hash_list]
+        
+        return dict([(h.name,h.hexdigest()) for h in hash_list])
