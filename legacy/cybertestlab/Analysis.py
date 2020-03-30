@@ -5,7 +5,7 @@ import sys
 import subprocess
 import magic
 import hashlib
-
+import uuid
 import r2pipe
 
 from stat import S_ISSOCK
@@ -18,11 +18,20 @@ __status__ = 'beta'
 
 
 class Analysis(object):
-    def __init__(self, path=None, debug=False):
+    def __init__(self, path=None, debug=False, index_type='none'):
 
         self.debug = debug
-        self.path = path
+        self.path = path if path.endswith('/') else path + '/'
         self.hardening_check = '/usr/bin/hardening-check'
+        self.index_type = index_type
+        self.index_types = ['none',
+                            'rand_uuid',
+                            'hash_md5',
+                            'hash_sha1',
+                            'hash_sha256',
+                            'hash_sha512',]
+        
+        # normalize path
         
     def find_elfs(self, **kwargs):
         path = self.path
@@ -60,14 +69,14 @@ class Analysis(object):
         
         for elf in elfs:
             if self.debug:
-                print('++ elf: ' + elf.replace(self.path + '/', ''))
+                print('++ elf: ' + elf.replace(self.path, ''))
             binary = elf
             relative_binary = \
-                binary.replace(self.path + '/', '').replace('.', '_')
+                self.indexer(binary.replace(self.path, '').replace('.', '_'))
 
             scan_results[relative_binary] = {}
             scan_results[relative_binary]['filename'] = binary.replace(
-                self.path + '/', '')
+                self.path, '')
 
             # get hardening-check results
             cmd = "{0} {1}".format(self.hardening_check, binary)
@@ -109,7 +118,7 @@ class Analysis(object):
                         hcdashf_clean
                 else:
                     if self.debug:
-                        print('+++ ' + elf.replace(self.path + '/', '') +
+                        print('+++ ' + elf.replace(self.path, '') +
                               ' had no `hardening-check -F` output')
 
             scan_results[relative_binary]['complexity'] = self.get_complexity(binary)
@@ -173,7 +182,7 @@ class Analysis(object):
             if algo in hashlib.algorithms_available:
                 hash_list.append(hashlib.new(algo))
             else:
-                raise Exception('{0} is not a supported hashing algorithm')
+                raise Exception('{0} is not a supported hashing algorithm'.format(algo))
         with open(file,'rb') as f:
             data = 'init'
             while data:
@@ -181,3 +190,25 @@ class Analysis(object):
                 [h.update(data) for h in hash_list]
         
         return dict([(h.name,h.hexdigest()) for h in hash_list])
+
+    def indexer(self, data, **kwargs):
+        if not self.index_type in self.index_types:
+            raise Exception('{0} is not a supported index type'.format(self.index_type))
+        
+        elif self.index_type.startswith('hash_'):
+            hash_algo = self.index_type.split('_')[1]
+            if hash_algo in hashlib.algorithms_available:
+                if sys.version_info.major == 3:
+                    data = data.encode(sys.getdefaultencoding())
+                _h = hashlib.new(hash_algo)
+                _h.update(data)
+                return _h.hexdigest()
+            else:
+                raise Exception('{0} is not a supported hashing algorithm'.format(algo))
+        
+        elif self.index_type == 'rand_uuid':
+            return str(uuid.uuid4())
+
+        else:
+            return data        
+        
