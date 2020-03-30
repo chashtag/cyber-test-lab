@@ -166,7 +166,7 @@ class Analysis(object):
             return results.decode(sys.getdefaultencoding())
         return results
 
-    def get_hashes(self,file, hash_set=['md5','sha1','sha512'], **kwargs):
+    def get_hashes(self,file, hash_set=['md5', 'sha1', 'sha256', 'sha512'], **kwargs):
         # quick hashing with large file support
         hash_list = []
         for algo in hash_set:
