@@ -93,7 +93,7 @@ class Analysis(object):
                 hrlist = hr.split(':')
                 test = hrlist[0]
                 finding = hrlist[1]
-                pretty_results[test.rstrip()] = finding.rstrip().lstrip()
+                pretty_results[test.strip()] = finding.strip()
             scan_results[relative_binary]['hardening-check'] = pretty_results
 
             # get function report
