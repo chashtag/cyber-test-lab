@@ -8,6 +8,7 @@ import datetime
 import OpenSSL
 import requests
 import magic
+import json
 import gzip
 import base64
 import re
@@ -33,6 +34,8 @@ class MirrorCrawler(object):
         self.sess = requests.session()
         self.sess.verify = os.environ.get('ALLOW_INSECURE_SSL')
         self.repo_type = None
+        self.only_export_packages = True
+        self.group_insert_count = 2500 # > 0 enables batch inserts 
 
         # lets disable Google cloud stuff for now while I figure out free tier pricing, or make and alt solution
         if not os.environ.get('NO_GCSTORAGE'):
@@ -42,8 +45,126 @@ class MirrorCrawler(object):
         
         if not os.environ.get('NO_GBQ'):
             self.bq_client = bigquery.Client()
+            self.table_id = self.config['project'] + '.' + \
+                       self.config['bq_dataset'] + '.' + \
+                       self.config['bq_table']
+            self.table = self.bq_client.get_table(self.table_id)
         else:
             self.bq_client = None
+            self.table_id = None
+            self.table = None
+        self.xlator_dict = {'ada': {'field': 'ada', 'type': str},
+                            'adherence': {'field': 'adherence', 'type': str},
+                            'arch': {'field': 'arch', 'type': str},
+                            'architecture': {'field': 'architecture', 'type': str},
+                            'book': {'field': 'book', 'type': str},
+                            'breaks': {'field': 'breaks', 'type': str},
+                            'build-essential': {'field': 'build_essential', 'type': str},
+                            'build-ids': {'field': 'build_ids', 'type': str},
+                            'builder': {'field': 'builder', 'type': str},
+                            'built-using': {'field': 'built_using', 'type': str},
+                            'checksum': {'field': 'checksum', 'type': str},
+                            'checksum_type': {'field': 'checksum_type', 'type': str},
+                            'conflicts': {'field': 'conflicts', 'type': str},
+                            'crush': {'field': 'crush', 'type': str},
+                            'cython': {'field': 'cython', 'type': str},
+                            'decode': {'field': 'decode', 'type': str},
+                            'depends': {'field': 'depends', 'type': str},
+                            'description': {'field': 'description', 'type': str},
+                            'description-md5': {'field': 'description_md5', 'type': str},
+                            'endgame': {'field': 'endgame', 'type': str},
+                            'enhances': {'field': 'enhances', 'type': str},
+                            'essential': {'field': 'essential', 'type': str},
+                            'filename': {'field': 'filename', 'type': str},
+                            'filter': {'field': 'filter', 'type': str},
+                            'format': {'field': 'format', 'type': str},
+                            'formats': {'field': 'formats', 'type': str},
+                            'framework': {'field': 'framework', 'type': str},
+                            'french': {'field': 'french', 'type': str},
+                            'functions': {'field': 'functions', 'type': str},
+                            'go-import-path': {'field': 'go_import_path', 'type': str},
+                            'gui': {'field': 'gui', 'type': str},
+                            'homepage': {'field': 'homepage', 'type': str},
+                            'hosting': {'field': 'hosting', 'type': str},
+                            'hpi': {'field': 'hpi', 'type': str},
+                            'installed-size': {'field': 'size_installed', 'type': str},
+                            'installer-menu-item': {'field': 'installer_menu_item','type': str},
+                            'interface': {'field': 'interface', 'type': str},
+                            'kernel-version': {'field': 'kernel_version', 'type': str},
+                            'lasso': {'field': 'lasso', 'type': str},
+                            'library': {'field': 'library', 'type': str},
+                            'lisp': {'field': 'lisp', 'type': str},
+                            'location': {'field': 'location', 'type': str},
+                            'lua': {'field': 'lua', 'type': str},
+                            'lua-versions': {'field': 'lua_versions', 'type': str},
+                            'maintainer': {'field': 'maintainer', 'type': str},
+                            'masses': {'field': 'masses', 'type': str},
+                            'md5sum': {'field': 'md5sum', 'type': str},
+                            'method': {'field': 'method', 'type': str},
+                            'mkl': {'field': 'mkl', 'type': str},
+                            'multi-arch': {'field': 'multi_arch', 'type': str},
+                            'name': {'field': 'name', 'type': str},
+                            'nmh': {'field': 'nmh', 'type': str},
+                            'original-maintainer': {'field': 'original_maintainer','type': str},
+                            'package': {'field': 'package', 'type': str},
+                            'packager': {'field': 'packager', 'type': str},
+                            'pkgid': {'field': 'pkgid', 'type': str},
+                            'planescape': {'field': 'planescape', 'type': str},
+                            'png': {'field': 'png', 'type': str},
+                            'pre-depends': {'field': 'pre_depends', 'type': str},
+                            'prefixes': {'field': 'prefixes', 'type': str},
+                            'priority': {'field': 'priority', 'type': str},
+                            'provides': {'field': 'provides', 'type': str},
+                            'python': {'field': 'python', 'type': str},
+                            'python-egg-name': {'field': 'python_egg_name', 'type': str},
+                            'python-hdf4': {'field': 'python_hdf4', 'type': str},
+                            'python-version': {'field': 'python_version', 'type': str},
+                            'qusage': {'field': 'qusage', 'type': str},
+                            'r': {'field': 'r', 'type': str},
+                            'rails': {'field': 'rails', 'type': str},
+                            'raptor': {'field': 'raptor', 'type': str},
+                            'received': {'field': 'received', 'type': str},
+                            'recommends': {'field': 'recommends', 'type': str},
+                            'replaces': {'field': 'replaces', 'type': str},
+                            'ruby-versions': {'field': 'ruby_versions', 'type': str},
+                            'section': {'field': 'section', 'type': str},
+                            'services': {'field': 'services', 'type': str},
+                            'sha256': {'field': 'sha256', 'type': str},
+                            'shim': {'field': 'shim', 'type': str},
+                            'size': {'field': 'size', 'type': str},
+                            'size_archive': {'field': 'size_archive', 'type': str},
+                            'size_installed': {'field': 'size_installed', 'type': str},
+                            'size_package': {'field': 'size_package', 'type': str},
+                            'source': {'field': 'source', 'type': str},
+                            'subarchitecture': {'field': 'subarchitecture', 'type': str},
+                            'suggests': {'field': 'suggests', 'type': str},
+                            'summary': {'field': 'summary', 'type': str},
+                            'support': {'field': 'support', 'type': str},
+                            'synthesizer': {'field': 'synthesizer', 'type': str},
+                            'system': {'field': 'system', 'type': str},
+                            'tads3-version': {'field': 'tads3_version', 'type': str},
+                            'tag': {'field': 'tag', 'type': str},
+                            'time_build': {'field': 'time_build', 'type': str},
+                            'time_file': {'field': 'time_file', 'type': str},
+                            'timestamps': {'field': 'timestamps', 'type': str},
+                            'tldr': {'field': 'tldr', 'type': str},
+                            'toolkit': {'field': 'toolkit', 'type': str},
+                            'tools': {'field': 'tools', 'type': str},
+                            'ufo': {'field': 'ufo', 'type': str},
+                            'url': {'field': 'url', 'type': str},
+                            'utf8-cpp': {'field': 'utf8_cpp', 'type': str},
+                            'utilities': {'field': 'utilities', 'type': str},
+                            'version': {'field': 'version', 'type': str},
+                            'version_epoch': {'field': 'version_epoch', 'type': str},
+                            'version_rel': {'field': 'version_rel', 'type': str},
+                            'version_ver': {'field': 'version_ver', 'type': str},
+                            'writebuffer': {'field': 'writebuffer', 'type': str},
+                            'x-cargo-built-using': {'field': 'x_cargo_built_using','type': str},
+                            'xstrings': {'field': 'xstrings', 'type': str},
+                            'zone': {'field': 'zone', 'type': str},
+                            'repo_url': {'field': 'repo_url', 'type': str},
+                            }
+
 
     def parse(self, url, filename) -> list:
         with open(filename, 'r') as f:
@@ -257,13 +378,13 @@ class MirrorCrawler(object):
             data = self.sess.get(repo+data_set_loc).content
 
             if data_set_loc.endswith('.xml.gz'):
-                repo_data['repomd'][data_set]['raw_xml'] = gzip.decompress(data)
+                repo_data['repomd'][data_set]['raw_xml'] = gzip.decompress(data).decode('utf-8')
 
             elif data_set_loc.endswith('.xml'):
-                repo_data['repomd'][data_set]['raw_xml'] = data
+                repo_data['repomd'][data_set]['raw_xml'] = data.decode('utf-8')
             
             else:
-                repo_data['repomd'][data_set]['raw_data'] = base64.b64encode(data)
+                repo_data['repomd'][data_set]['raw_data'] = base64.b64encode(data).decode('utf-8')
             
             if data_set == 'primary': # lets go fast for now and work with the primary set once we see it
                 break
@@ -304,7 +425,7 @@ class MirrorCrawler(object):
         data = self.sess.get(repo + 'Release').text
         data_split = re.split(r'([A-Z\-a-z0-9]+)\:\s', data, re.DOTALL)[1:]
         release_dict = dict(zip(*[map(lambda x: x.strip(), data_split[i::2]) for i in [0,1]]))
-        release_dict['Packages'] = {}
+        release_dict['packages'] = {}
 
         if release_dict.get('Architectures'):
             release_dict['Architectures'] = release_dict.get('Architectures').split(' ')
@@ -330,7 +451,7 @@ class MirrorCrawler(object):
                     for item in data.split('\n\n'):
                         parsed = self.parse_deb_entity(item)
                         if parsed.get('MD5sum'):
-                            release_dict['Packages'][parsed.get('MD5sum')] = parsed
+                            release_dict['packages'][parsed.get('MD5sum')] = parsed
         return release_dict
 
                 
@@ -424,7 +545,44 @@ class MirrorCrawler(object):
                 path = directory + '/' + basename
                 self.download(deeper_url, path)
                 self.process_file(deeper_url, cert, path)
+    
+    def process_packages(self,url,packages):
+        _total = 0
+        if type(packages) == dict:
+            is_dict = True
+        else:
+            is_dict = False
+        ready_to_insert = []
+        for p in packages:
+            if is_dict:
+                p = packages[p]
+                p.update({'repo_url':url})
+            x = self.xlate(p)
 
+            if self.group_insert_count:
+                ready_to_insert.append(x)
+            
+            if len(ready_to_insert) >= self.group_insert_count:
+                ret = self.bq_client.insert_rows_json(self.table, ready_to_insert)
+                if ret:
+                    print('problem on insert {}'.format(ret))
+                print('Inserted {0} rows'.format(len(ready_to_insert)))
+                ready_to_insert = []
+
+
+        if len(ready_to_insert):
+            ret = self.bq_client.insert_rows_json(self.table, ready_to_insert)
+            if ret:
+                print('problem on insert {}'.format(ret))
+            print('Inserted {0} rows'.format(len(ready_to_insert)))
+            ready_to_insert = []
+            
+            
+            #rows_to_insert = [{'name':'asd','checksum':'asd'},{'name':'asdd','checksum':'aq'}]
+            #print(self.bq_client.insert_rows_json(table, rows_to_insert))
+            
+
+    
     def process_file(self, url, cert, path):
         filename = os.path.basename(path)
         with open(path, 'rb') as f:
@@ -478,22 +636,41 @@ class MirrorCrawler(object):
         except IOError as e:
             raise Exception('failed to delete ' + path + ': ' + str(e))
 
+    def xlate(self, data):
+        def try_trans(t,d):
+            try:
+                return t(d)
+            except:
+                return d
+
+        return dict([(self.xlator_dict[k]['field'],try_trans(self.xlator_dict[k]['type'],v)) for \
+            k,v in data.items() if self.xlator_dict.get(k)])
+
+
+        pass
+
 
 def main():
     url = os.environ.get('MIRROR')
 
     mc = MirrorCrawler()
-
-    #server_cert = mc.download(url, mc.config['local_path'] + '/index.html')
     
-    #mc.mirror(url, server_cert, mc.config['local_path'])
     repo_type = mc.ident_repo(url)
-    print(repo_type)
+    
     if repo_type == 'Yum':
-        mc.get_package_list_yum(url)
-        
+        ret = mc.get_package_list_yum(url)
+
     elif repo_type == 'Deb':
-        mc.get_package_list_deb(url)
+        ret = mc.get_package_list_deb(url)
+    
+    else:
+        raise Exception('Unknown repo')
+        exit()
+
+    mc.process_packages(url,ret.get('packages'))
+        
+    
+        
 
         
 
