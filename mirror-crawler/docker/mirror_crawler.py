@@ -97,7 +97,7 @@ class MirrorCrawler(object):
                             'endgame': {'field': 'endgame', 'type': str},
                             'enhances': {'field': 'enhances', 'type': str},
                             'essential': {'field': 'essential', 'type': str},
-                            'filename': {'field': 'filename', 'type': str},
+                            'filename': {'field': 'location', 'type': str},
                             'filter': {'field': 'filter', 'type': str},
                             'format': {'field': 'format', 'type': str},
                             'formats': {'field': 'formats', 'type': str},
