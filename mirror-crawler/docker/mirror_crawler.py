@@ -12,6 +12,7 @@ import json
 import gzip
 import base64
 import re
+import mysql.connector as mysql
 import defusedxml.ElementTree as ET
 
 from bs4 import BeautifulSoup
@@ -30,6 +31,13 @@ class MirrorCrawler(object):
             'bucket_name': os.environ.get('BUCKET_NAME'),
             'bucket_path': os.environ.get('BUCKET_PATH'),
             'local_path': os.environ.get('LOCAL_PATH'),
+            'use_sql':  os.environ.get('USE_SQL'),
+            'sql_server': os.environ.get('SQL_SERVER'),
+            'sql_username': os.environ.get('SQL_USERNAME'),
+            'sql_password': os.environ.get('SQL_PASSWORD'),
+            'sql_db': os.environ.get('SQL_DB'),
+            'sql_table':  os.environ.get('SQL_TABLE'),
+                         
             }
         self.sess = requests.session()
         self.sess.verify = os.environ.get('ALLOW_INSECURE_SSL')
@@ -49,10 +57,25 @@ class MirrorCrawler(object):
                        self.config['bq_dataset'] + '.' + \
                        self.config['bq_table']
             self.table = self.bq_client.get_table(self.table_id)
+            print('Setup to use Google Big Query')
         else:
+            print('Not using Google Big Query')
             self.bq_client = None
             self.table_id = None
             self.table = None
+        
+        if self.config.get('use_sql'):
+            self.mydb = mysql.connect(
+            host = self.config.get('sql_server'),
+            user = self.config.get('sql_username'),
+            passwd = self.config.get('sql_password'),
+            database = self.config.get('sql_db'))
+            print('Setup to use SQL')
+        else:
+            print('Not using SQL')
+            self.mydb = None
+
+
         self.xlator_dict = {'ada': {'field': 'ada', 'type': str},
                             'adherence': {'field': 'adherence', 'type': str},
                             'arch': {'field': 'arch', 'type': str},
@@ -457,12 +480,22 @@ class MirrorCrawler(object):
                 
 
     def parse_deb_entity(self,data):
-        data_split = re.split(r'([A-Z\-a-z0-9]+)\:\s', data, re.DOTALL)[1:]
-        dict_map = dict(zip(*[map(lambda x: x.strip(),data_split[i::2]) for i in [0,1]]))
-        if dict_map.get('Depends'):
-            dict_map['Depends'] = dict_map['Depends'].split(',')
         
-        return dict_map
+        ### need to revist this, and tweek it for "tags:"
+        #data_split = re.split(r'([A-Z\-a-z0-9]+)\:\s', data, re.DOTALL)[1:]
+        #dict_map = dict(zip(*[map(lambda x: x.strip(),data_split[i::2]) for i in [0,1]]))
+        #if dict_map.get('Depends'):
+        #    dict_map['Depends'] = dict_map['Depends'].split(',')
+        #print(dict_map)
+
+        data_split = [x.split(': ') for x in data.split('\n') if ': ' in x]
+        normalize = [x if len(x) == 2 else [x[0]]+[': '.join(x[1:])] for x in data_split]
+        
+        normalize = dict(normalize)
+        #if normalize.get('Depends'):
+            #normalize['Depends'] = dict_map['Depends'].split(',')
+
+        return normalize
         
     def download_lf(self, url, filename):
         # Large file download support
@@ -546,7 +579,37 @@ class MirrorCrawler(object):
                 self.download(deeper_url, path)
                 self.process_file(deeper_url, cert, path)
     
-    def process_packages(self,url,packages):
+    def insert_rows(self,data) -> list:
+        print(data)
+        ret = []
+        if not os.environ.get('NO_GBQ'):
+            ret = self.bq_client.insert_rows_json(self.table, data)
+            if ret:
+                print('problem on insert {}'.format(ret))
+        
+        if self.config.get('use_sql'):
+            _keys = []
+            prep = []
+            for i in data:
+                _keys.extend(i.keys())
+
+            _keys = set(_keys)
+            prep.extend([tuple([i.get(k) for k in _keys]) for i in data])
+            
+            sql = 'INSERT IGNORE INTO {0} ({1}) VALUES {2}'.format(self.config.get('sql_table'), ','.join(_keys)
+                , ''.join([str(x).replace('None','NULL').replace('"','\"') for x in prep]) )
+            
+            sql = 'INSERT IGNORE INTO {0} ({1}) VALUES ({2})'.format(self.config.get('sql_table'), ','.join(_keys),','.join(['%s']*len(_keys)))
+
+            _cursor = self.mydb.cursor()
+            ret = _cursor.executemany(sql, [tuple([str(a).replace('None','NULL') for a in x ]) for x in prep])
+            self.mydb.commit()
+            
+        print('Inserted {0} rows'.format(len(data)))
+        return ret
+
+
+    def process_packages(self,url,packages) -> int:
         _total = 0
         if type(packages) == dict:
             is_dict = True
@@ -554,6 +617,7 @@ class MirrorCrawler(object):
             is_dict = False
         ready_to_insert = []
         for p in packages:
+            _total += 1
             if is_dict:
                 p = packages[p]
                 p.update({'repo_url':url})
@@ -563,19 +627,15 @@ class MirrorCrawler(object):
                 ready_to_insert.append(x)
             
             if len(ready_to_insert) >= self.group_insert_count:
-                ret = self.bq_client.insert_rows_json(self.table, ready_to_insert)
-                if ret:
-                    print('problem on insert {}'.format(ret))
-                print('Inserted {0} rows'.format(len(ready_to_insert)))
+                self.insert_rows(ready_to_insert)
                 ready_to_insert = []
-
-
-        if len(ready_to_insert):
-            ret = self.bq_client.insert_rows_json(self.table, ready_to_insert)
-            if ret:
-                print('problem on insert {}'.format(ret))
-            print('Inserted {0} rows'.format(len(ready_to_insert)))
+        
+        if len(ready_to_insert): # finish out batch
+            self.insert_rows(ready_to_insert)
             ready_to_insert = []
+        print('Total inserted: {0}'.format(_total))
+
+        return _total
             
             
             #rows_to_insert = [{'name':'asd','checksum':'asd'},{'name':'asdd','checksum':'aq'}]
@@ -636,15 +696,15 @@ class MirrorCrawler(object):
         except IOError as e:
             raise Exception('failed to delete ' + path + ': ' + str(e))
 
-    def xlate(self, data):
+    def xlate(self, data, for_sql=False):
         def try_trans(t,d):
             try:
                 return t(d)
             except:
                 return d
 
-        return dict([(self.xlator_dict[k]['field'],try_trans(self.xlator_dict[k]['type'],v)) for \
-            k,v in data.items() if self.xlator_dict.get(k)])
+        return dict([(self.xlator_dict[k.lower()]['field'],try_trans(self.xlator_dict[k.lower()]['type'],v)) for \
+            k,v in data.items() if self.xlator_dict.get(k.lower())])
 
 
         pass
@@ -666,7 +726,7 @@ def main():
     else:
         raise Exception('Unknown repo')
         exit()
-
+    
     mc.process_packages(url,ret.get('packages'))
         
     
