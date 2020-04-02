@@ -78,7 +78,7 @@ class MirrorCrawler(object):
         self.xlator_dict = {'ada': {'field': 'ada', 'type': str},
                             'adherence': {'field': 'adherence', 'type': str},
                             'arch': {'field': 'arch', 'type': str},
-                            'architecture': {'field': 'architecture', 'type': str},
+                            'architecture': {'field': 'arch', 'type': str},
                             'book': {'field': 'book', 'type': str},
                             'breaks': {'field': 'breaks', 'type': str},
                             'build-essential': {'field': 'build_essential', 'type': str},
@@ -128,7 +128,7 @@ class MirrorCrawler(object):
                             'name': {'field': 'name', 'type': str},
                             'nmh': {'field': 'nmh', 'type': str},
                             'original-maintainer': {'field': 'original_maintainer','type': str},
-                            'package': {'field': 'package', 'type': str},
+                            'package': {'field': 'name', 'type': str},
                             'packager': {'field': 'packager', 'type': str},
                             'pkgid': {'field': 'pkgid', 'type': str},
                             'planescape': {'field': 'planescape', 'type': str},
@@ -154,7 +154,7 @@ class MirrorCrawler(object):
                             'sha256': {'field': 'sha256', 'type': str},
                             'shim': {'field': 'shim', 'type': str},
                             'size': {'field': 'size', 'type': str},
-                            'size_archive': {'field': 'size_archive', 'type': str},
+                            'size_archive': {'field': 'size', 'type': str},
                             'size_installed': {'field': 'size_installed', 'type': str},
                             'size_package': {'field': 'size_package', 'type': str},
                             'source': {'field': 'source', 'type': str},
@@ -472,6 +472,8 @@ class MirrorCrawler(object):
                 if data:
                     for item in data.split('\n\n'):
                         parsed = self.parse_deb_entity(item)
+                        parsed.update({'location': parsed.get('filename')
+                                        })
                         
                         if parsed.get('SHA256'):
                             _checksum = parsed.get('SHA256')
@@ -588,7 +590,6 @@ class MirrorCrawler(object):
                 self.process_file(deeper_url, cert, path)
     
     def insert_rows(self,data) -> list:
-        print(data)
         ret = []
         if not os.environ.get('NO_GBQ'):
             ret = self.bq_client.insert_rows_json(self.table, data)
