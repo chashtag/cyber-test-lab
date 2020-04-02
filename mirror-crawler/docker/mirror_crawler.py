@@ -37,7 +37,6 @@ class MirrorCrawler(object):
             'sql_password': os.environ.get('SQL_PASSWORD'),
             'sql_db': os.environ.get('SQL_DB'),
             'sql_table':  os.environ.get('SQL_TABLE'),
-                         
             }
         self.sess = requests.session()
         self.sess.verify = os.environ.get('ALLOW_INSECURE_SSL')
@@ -473,8 +472,17 @@ class MirrorCrawler(object):
                 if data:
                     for item in data.split('\n\n'):
                         parsed = self.parse_deb_entity(item)
-                        if parsed.get('MD5sum'):
-                            release_dict['packages'][parsed.get('MD5sum')] = parsed
+                        
+                        if parsed.get('SHA256'):
+                            _checksum = parsed.get('SHA256')
+                        elif parsed.get('MD5sum'):
+                            _checksum = parsed.get('MD5sum')
+                        elif parsed.get('MD5um'):
+                            _checksum = parsed.get('MD5sum')
+                        else:
+                            _checksum = "UNK-"+hashlib.md5(os.urandom(16)).hexdigest()
+                        parsed.update({'checksum':_checksum})
+                        release_dict['packages'][parsed.get('MD5sum')] = parsed
         return release_dict
 
                 
